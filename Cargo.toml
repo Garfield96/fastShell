@@ -1,0 +1,11 @@
+[package]
+name = "fastShell"
+version = "0.1.0"
+authors = ["Christian Menges <christian.menges@tum.de>"]
+edition = "2018"
+
+[dependencies]
+conch-parser = "0.1.0"
+owned_chars = "0.3"
+libc = "0.2"
+rusqlite = {version="0.25.3", features = ["blob"]}
