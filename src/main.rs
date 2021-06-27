@@ -1,16 +1,8 @@
-use std::borrow::Borrow;
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, Read, Write};
-use std::{env, fs, io};
+use std::fs::File;
+use std::io::Read;
 
 use clap::{App, Arg};
 // Build upon https://github.com/ipetkov/conch-parser/blob/master/examples/analysis.rs
-use conch_parser::ast;
-use conch_parser::ast::{
-    Arithmetic, ComplexWord, CompoundCommand, CompoundCommandKind, Parameter,
-    ParameterSubstitution, PatternBodyPair, Redirect, SimpleWord, TopLevelCommand, TopLevelWord,
-    Word,
-};
 
 use crate::executor::Executor;
 

@@ -1,4 +1,4 @@
-use crate::db_backend::{Postgres, SQLite};
+use crate::db_backend::Postgres;
 use conch_parser::ast::Redirect;
 
 #[derive(Debug)]

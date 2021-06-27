@@ -1,10 +1,6 @@
 use crate::commands::Command;
 use crate::intermediate::Intermediate;
 use crate::STANDALONE;
-use rusqlite::{params, Connection};
-use std::fs::File;
-use std::io;
-use std::io::BufRead;
 
 pub struct cat;
 

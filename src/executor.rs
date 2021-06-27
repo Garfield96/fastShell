@@ -1,27 +1,21 @@
 use std::borrow::{Borrow, BorrowMut};
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, Read, Write};
-use std::{env, fs, io};
 
 // Build upon https://github.com/ipetkov/conch-parser/blob/master/examples/analysis.rs
 use conch_parser::ast;
 use conch_parser::ast::{
-    Arithmetic, ComplexWord, CompoundCommand, CompoundCommandKind, Parameter,
-    ParameterSubstitution, PatternBodyPair, Redirect, RedirectOrEnvVar, SimpleWord,
-    TopLevelCommand, TopLevelWord, Word,
+    ComplexWord, CompoundCommandKind, Parameter, PatternBodyPair, Redirect, RedirectOrEnvVar,
+    SimpleWord, TopLevelWord,
 };
 use conch_parser::lexer::Lexer;
 use conch_parser::parse::{DefaultParser, Parser};
-use rusqlite::ffi::ErrorCode::FileLockingProtocolFailed;
-use rusqlite::{params, AndThenRows, Connection};
 
 use crate::commands::{cat, echo, grep, head, shellCommand, shuf, sort, tail, uniq, wc, Command};
-use crate::db_backend::{Postgres, SQLite};
+use crate::db_backend::Postgres;
 use crate::intermediate::Intermediate;
-use crate::STANDALONE;
+
 use conch_parser::ast::builder::StringBuilder;
 use postgres::{Client, NoTls};
-use rusqlite::config::DbConfig::SQLITE_DBCONFIG_TRIGGER_EQP;
+
 use std::str::Chars;
 
 pub struct Executor<'a> {
@@ -72,7 +66,7 @@ impl Executor<'_> {
                 intermediate.sql = String::new();
             }
         }
-        let mut sql: String = format!("BEGIN; {} COMMIT;", intermediate.getSQL());
+        let sql: String = format!("BEGIN; {} COMMIT;", intermediate.getSQL());
         println!("{}", sql.replace(";", ";\n"));
         intermediate.conn.unwrap().batch_execute(sql).unwrap();
     }
@@ -123,14 +117,14 @@ fn eval_pipeable(intermediate: &mut Intermediate, cmd: &ast::DefaultPipeableComm
                 CompoundCommandKind::Brace(_) => {}
                 CompoundCommandKind::Subshell(_) => {}
                 CompoundCommandKind::While(w) => {
-                    let mut guard_tmp = String::new();
+                    let guard_tmp = String::new();
                     for guard in &w.guard {
                         let mut interm: Intermediate = Default::default();
                         eval_cmd(guard, &mut interm);
                     }
-                    let mut tmp = String::new();
-                    for body in &w.body {
-                        let mut interm: Intermediate = Default::default();
+                    let tmp = String::new();
+                    for _body in &w.body {
+                        let _interm: Intermediate = Default::default();
                         // body.iter().for_each(|cmd| eval_cmd(cmd, &mut interm));
                         // tmp.push_str(&*format!(
                         //     "WHEN {} THEN {}",
@@ -153,8 +147,8 @@ fn eval_pipeable(intermediate: &mut Intermediate, cmd: &ast::DefaultPipeableComm
                 }
                 CompoundCommandKind::Until(_) => {}
                 CompoundCommandKind::If {
-                    conditionals,
-                    else_branch,
+                    conditionals: _,
+                    else_branch: _,
                 } => {
                     intermediate.transaction.push(format!(
                         "\
@@ -223,7 +217,7 @@ fn eval_simple(intermediate: &mut Intermediate, cmd: &ast::DefaultSimpleCommand)
                 panic!("Not supported");
             }
             RedirectOrEnvVar::EnvVar(k, v) => {
-                let mut value;
+                let value;
                 if let Some(v) = v {
                     value = topLevelWordToString(v).expect("Error parsing value");
                 } else {
@@ -268,7 +262,7 @@ fn eval_simple(intermediate: &mut Intermediate, cmd: &ast::DefaultSimpleCommand)
         })
         .filter_map(|word| match word {
             ast::ComplexWord::Single(w) => Some(w),
-            ast::ComplexWord::Concat(c) => None,
+            ast::ComplexWord::Concat(_c) => None,
         })
         .filter_map(|word| match word {
             ast::Word::SingleQuoted(w) => Some(w.to_string()),
@@ -297,7 +291,7 @@ fn eval_simple(intermediate: &mut Intermediate, cmd: &ast::DefaultSimpleCommand)
         };
     }
     let parts: Vec<&String> = parts.iter().map(|x| x).collect();
-    let mut first = parts.first().unwrap().to_string();
+    let first = parts.first().unwrap().to_string();
     match first.replace("'", "").as_str() {
         "cat" => {
             <cat::cat as Command>::run(intermediate, parts);

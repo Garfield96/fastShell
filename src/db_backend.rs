@@ -1,8 +1,7 @@
 use postgres::Error;
-use rusqlite::{Connection, Statement, Transaction};
-use std::borrow::{Borrow, BorrowMut};
+use rusqlite::{Statement, Transaction};
+
 use std::fmt;
-use std::fmt::Display;
 
 // pub(crate) trait DB {
 //     fn execute(&mut self, sql: String);
@@ -40,8 +39,8 @@ impl fmt::Debug for Postgres {
 
 // impl DB for Postgres {
 impl Postgres {
-    pub fn execute(&mut self, sql: String) {
-        self.conn.as_mut().unwrap().execute(sql.as_str(), &[]);
+    pub fn execute(&mut self, sql: String) -> Result<u64, Error> {
+        self.conn.as_mut().unwrap().execute(sql.as_str(), &[])
     }
 
     pub fn prepare(&mut self, sql: String) -> Result<postgres::Statement, Error> {

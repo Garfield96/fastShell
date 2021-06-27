@@ -1,9 +1,9 @@
 use crate::commands::Command;
 use crate::intermediate::Intermediate;
-use crate::{getxattr, intermediate, STANDALONE};
+
 use rusqlite::functions::FunctionFlags;
-use rusqlite::{params, Connection};
-use std::borrow::Borrow;
+use rusqlite::Connection;
+
 use std::io::Write;
 use std::process;
 use std::process::Stdio;
