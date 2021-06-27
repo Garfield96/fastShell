@@ -18,6 +18,10 @@ target/release/fastShell "cat ..."
 
 Only write redirects `>` are supported.
 
+### Postgres
+
+Adapt username and password and make sure a DB called `shell` exists.
+
 ## Supported Commands
 
 * `cat`

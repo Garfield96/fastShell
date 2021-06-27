@@ -1,5 +1,5 @@
 use crate::commands::Command;
-use crate::Intermediate;
+use crate::intermediate::Intermediate;
 
 pub struct sort;
 
@@ -8,14 +8,19 @@ impl Command for sort {
         intermediate.sql = if parts.len() > 2 {
             if parts[1] == "desc" {
                 format!(
-                    "SELECT * FROM ({}) ORDER BY {} desc",
-                    intermediate.sql, parts[2]
+                    "SELECT * FROM ({}) as data  ORDER BY {} desc",
+                    intermediate.sql,
+                    parts[2].replace("'", "")
                 )
             } else {
                 "".to_string()
             }
         } else {
-            format!("SELECT * FROM ({}) ORDER BY {}", intermediate.sql, parts[1])
+            format!(
+                "SELECT * FROM ({}) as data  ORDER BY {}",
+                intermediate.sql,
+                parts[1].replace("'", "")
+            )
         };
     }
 }

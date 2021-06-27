@@ -8,4 +8,6 @@ edition = "2018"
 conch-parser = "0.1.0"
 owned_chars = "0.3"
 libc = "0.2"
-rusqlite = {version="0.25.3", features = ["blob"]}
+rusqlite = {version="0.25.3", features = ["blob", "functions"]}
+clap = "~2.33"
+postgres = "0.19.1"

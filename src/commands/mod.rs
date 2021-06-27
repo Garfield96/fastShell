@@ -1,9 +1,10 @@
-use crate::Intermediate;
+use crate::intermediate::Intermediate;
 
 pub trait Command {
     fn run(intermediate: &mut Intermediate, parts: Vec<&String>);
 }
 pub mod cat;
+pub mod echo;
 pub mod grep;
 pub mod head;
 pub mod shellCommand;

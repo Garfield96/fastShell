@@ -1,12 +1,12 @@
 use crate::commands::Command;
-use crate::Intermediate;
+use crate::intermediate::Intermediate;
 
 pub struct tail;
 
 impl Command for tail {
     fn run(intermediate: &mut Intermediate, parts: Vec<&String>) {
         intermediate.sql = format!(
-            "SELECT * FROM ({}) ORDER BY rowid desc LIMIT {}",
+            "SELECT * FROM ({}) as data  ORDER BY rowid desc LIMIT {}",
             intermediate.sql, parts[1]
         )
     }

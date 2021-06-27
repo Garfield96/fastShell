@@ -1,10 +1,14 @@
 use crate::commands::Command;
-use crate::Intermediate;
+use crate::intermediate::Intermediate;
 
 pub struct head;
 
 impl Command for head {
     fn run(intermediate: &mut Intermediate, parts: Vec<&String>) {
-        intermediate.sql = format!("SELECT * FROM ({}) LIMIT {}", intermediate.sql, parts[1]);
+        intermediate.sql = format!(
+            "SELECT * FROM ({}) as data LIMIT {}",
+            intermediate.sql,
+            parts[1].replace("'", "")
+        );
     }
 }
