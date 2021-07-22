@@ -2,6 +2,15 @@
 
 A small shell interpreter, which translates shell commands into SQL and thus enables full pipeline optimization.
 
+## Build Docker Image
+```sh
+docker build -t fastshell docker/
+```
+## Run Docker
+```sh
+docker run --rm -it -v $(pwd):/fastshell fastshell
+```
+
 ## Build
 
 ```sh
