@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !script_file.is_empty() {
         let mut input_file = File::open(script_file).expect("Cannot open input file");
         script = String::new();
-        input_file.read_to_string(&mut script);
+        input_file.read_to_string(&mut script).unwrap();
     } else {
         script = args.value_of("COMMAND").unwrap_or("").to_string();
     }

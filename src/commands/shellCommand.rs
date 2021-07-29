@@ -17,7 +17,7 @@ fn add_execexternal_function(db: &Connection) -> Result<(), rusqlite::Error> {
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         move |ctx| {
             let prog_call: String = ctx.get(1).unwrap();
-            let prog_call: Vec<&str> = prog_call.split(" ").collect();
+            let prog_call: Vec<&str> = prog_call.split(' ').collect();
             let input: String = ctx.get(0).unwrap();
             let mut prog = process::Command::new(prog_call.first().unwrap())
                 .args(prog_call.iter().skip(1).cloned().collect::<Vec<&str>>())

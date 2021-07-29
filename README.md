@@ -19,8 +19,14 @@ cargo build --release
 
 ## Usage
 
+Execute command
 ```sh
-target/release/fastShell "cat ..."
+target/release/fastShell -c "cat ..."
+```
+
+Execute script
+```sh
+target/release/fastShell <script>
 ```
 
 `&&` and `||` are treated like `;`.
@@ -33,15 +39,19 @@ Adapt username and password and make sure a DB called `shell` exists.
 
 ## Supported Commands
 
-* `cat`
-* `head <N>`
-* `tail <N>`
+* `cat <file>`
+* `head -n <line count>`
+* `tail -n <line count>`
 * `sort`
-  * `desc`
-* `grep lines <pattern>`
+  * `-r`,`--reverse`
+  * `-b`,`--ignore-leading-blanks`
+  * `-f`,`--ignore-case`
+* `grep <pattern>`
 * `uniq <flag> lines`
   * `-c`,`--count`
   * `-u`, `--unique`
 * `wc`
   * `-l`,`--lines`
   * `-c`, `--chars`
+  
+All commands support `--help`. 

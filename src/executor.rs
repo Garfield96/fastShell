@@ -3,8 +3,8 @@ use std::borrow::{Borrow, BorrowMut};
 // Build upon https://github.com/ipetkov/conch-parser/blob/master/examples/analysis.rs
 use conch_parser::ast;
 use conch_parser::ast::{
-    ComplexWord, CompoundCommandKind, Parameter, PatternBodyPair, Redirect, RedirectOrEnvVar,
-    SimpleWord, TopLevelWord,
+    ComplexWord, CompoundCommandKind, GuardBodyPair, Parameter, PatternBodyPair, Redirect,
+    RedirectOrEnvVar, SimpleWord, TopLevelCommand, TopLevelWord,
 };
 use conch_parser::lexer::Lexer;
 use conch_parser::parse::{DefaultParser, Parser};
@@ -23,7 +23,7 @@ pub struct Executor<'a> {
 }
 
 impl Executor<'_> {
-    pub fn create(script: &String) -> Executor {
+    pub fn create(script: &str) -> Executor {
         let lex = Lexer::new(script.chars());
         Executor {
             parser: DefaultParser::new(lex),
@@ -35,13 +35,35 @@ impl Executor<'_> {
         intermediate.conn = Some(Postgres {
             conn: Some(
                 Client::connect(
-                    "host=localhost user=postgres password='postgres' dbname='shell'",
+                    "host=localhost user=postgres password=postgres dbname='shell'",
                     NoTls,
                 )
                 .expect("Cannot open connection to DB"),
             ),
             // conn: Some(Connection::open_in_memory().expect("Cannot open connection to DB")),
         });
+        let sql = self.to_sql(&mut intermediate);
+        println!("{}", sql.replace(";", ";\n"));
+        intermediate.conn.unwrap().batch_execute(sql).unwrap();
+    }
+
+    fn to_sql(self, mut intermediate: &mut Intermediate) -> String {
+        Executor::gen_init_code(intermediate);
+        for cmd in self.parser {
+            eval_cmd(&cmd.unwrap(), intermediate.borrow_mut());
+            if !intermediate.sql.is_empty() {
+                // intermediate.transaction.push(format!("COPY ({}) TO '/var/lib/postgresql/result.txt'", intermediate.sql));
+                intermediate.transaction.push(format!(
+                    "COPY ({}) TO '/var/lib/postgresql/result.txt'",
+                    intermediate.sql
+                ));
+                intermediate.sql = String::new();
+            }
+        }
+        format!("BEGIN; {} COMMIT;", intermediate.getSQL())
+    }
+
+    fn gen_init_code(intermediate: &mut Intermediate) {
         intermediate.transaction.push(
             "\
         DROP TABLE IF EXISTS var"
@@ -55,22 +77,9 @@ impl Executor<'_> {
         value TEXT)"
                 .to_string(),
         );
-        for cmd in self.parser {
-            eval_cmd(&cmd.unwrap(), intermediate.borrow_mut());
-            if !intermediate.sql.is_empty() {
-                // intermediate.transaction.push(format!("COPY ({}) TO '/var/lib/postgresql/result.txt'", intermediate.sql));
-                intermediate.transaction.push(format!(
-                    "COPY ({}) TO '/var/lib/postgresql/result.txt'",
-                    intermediate.sql
-                ));
-                intermediate.sql = String::new();
-            }
-        }
-        let sql: String = format!("BEGIN; {} COMMIT;", intermediate.getSQL());
-        println!("{}", sql.replace(";", ";\n"));
-        intermediate.conn.unwrap().batch_execute(sql).unwrap();
     }
 }
+
 fn eval_cmd(cmd: &ast::TopLevelCommand<String>, intermediate: &mut Intermediate) {
     match &cmd.0 {
         ast::Command::Job(list) | ast::Command::List(list) => std::iter::once(&list.first)
@@ -86,13 +95,13 @@ fn eval_cmd(cmd: &ast::TopLevelCommand<String>, intermediate: &mut Intermediate)
 fn eval_listable(cmd: &ast::DefaultListableCommand, intermediate: &mut Intermediate) {
     match cmd {
         ast::ListableCommand::Single(cmd) => eval_pipeable(intermediate, cmd),
-        ast::ListableCommand::Pipe(_, cmds) => cmds
-            .into_iter()
-            .for_each(|cmd| eval_pipeable(intermediate, cmd)),
+        ast::ListableCommand::Pipe(_, cmds) => {
+            cmds.iter().for_each(|cmd| eval_pipeable(intermediate, cmd))
+        }
     }
 }
 
-fn topLevelWordToString(w: &TopLevelWord<String>) -> Option<String> {
+fn top_level_word_to_string(w: &TopLevelWord<String>) -> Option<String> {
     match &w.0 {
         ComplexWord::Concat(_) => None,
         ComplexWord::Single(w) => match w {
@@ -114,8 +123,12 @@ fn eval_pipeable(intermediate: &mut Intermediate, cmd: &ast::DefaultPipeableComm
         }
         ast::PipeableCommand::Compound(cmd) => {
             match &cmd.kind {
-                CompoundCommandKind::Brace(_) => {}
-                CompoundCommandKind::Subshell(_) => {}
+                CompoundCommandKind::Brace(_b) => {
+                    println!("Brace")
+                }
+                CompoundCommandKind::Subshell(_s) => {
+                    println!("Subshell")
+                }
                 CompoundCommandKind::While(w) => {
                     let guard_tmp = String::new();
                     for guard in &w.guard {
@@ -147,9 +160,18 @@ fn eval_pipeable(intermediate: &mut Intermediate, cmd: &ast::DefaultPipeableComm
                 }
                 CompoundCommandKind::Until(_) => {}
                 CompoundCommandKind::If {
-                    conditionals: _,
-                    else_branch: _,
+                    conditionals: c,
+                    else_branch: _e,
                 } => {
+                    for cond in c {
+                        let GuardBodyPair { guard, body } = cond;
+                        for g in guard {
+                            eval_cmd(g, intermediate);
+                        }
+                        for b in body {
+                            eval_cmd(b, intermediate);
+                        }
+                    }
                     intermediate.transaction.push(format!(
                         "\
         DO \
@@ -166,25 +188,41 @@ fn eval_pipeable(intermediate: &mut Intermediate, cmd: &ast::DefaultPipeableComm
                 }
                 CompoundCommandKind::For { .. } => {}
                 CompoundCommandKind::Case { word, arms } => {
-                    let word_str = topLevelWordToString(word).unwrap();
-                    let mut tmp = String::new();
-                    for PatternBodyPair { patterns, body } in arms {
-                        let conditions: Vec<String> = patterns
-                            .iter()
-                            .map(topLevelWordToString)
-                            .filter(|s| s.is_some())
-                            .map(|s| format!("search_str = {}", s.unwrap()))
-                            .collect();
-                        let mut interm: Intermediate = Default::default();
-                        body.iter().for_each(|cmd| eval_cmd(cmd, &mut interm));
-                        tmp.push_str(&*format!(
-                            "WHEN {} THEN {}",
-                            conditions.join(" or "),
-                            interm.getSQL()
-                        ));
-                    }
-                    intermediate.transaction.push(format!(
-                        "\
+                    caseStmt(intermediate, word, arms);
+                }
+            };
+        }
+
+        ast::PipeableCommand::FunctionDef(_, _) => {
+            // println!("Pipeable - Compound");
+        }
+    };
+}
+
+fn caseStmt(
+    intermediate: &mut Intermediate,
+    word: &TopLevelWord<String>,
+    arms: &Vec<PatternBodyPair<TopLevelWord<String>, TopLevelCommand<String>>>,
+) {
+    let word_str = top_level_word_to_string(word).unwrap();
+    let mut tmp = String::new();
+    for PatternBodyPair { patterns, body } in arms {
+        let conditions: Vec<String> = patterns
+            .iter()
+            .map(top_level_word_to_string)
+            .filter(|s| s.is_some())
+            .map(|s| format!("search_str = {}", s.unwrap()))
+            .collect();
+        let mut interm: Intermediate = Default::default();
+        body.iter().for_each(|cmd| eval_cmd(cmd, &mut interm));
+        tmp.push_str(&*format!(
+            "WHEN {} THEN {}",
+            conditions.join(" or "),
+            interm.getSQL()
+        ));
+    }
+    intermediate.transaction.push(format!(
+        "\
         DO \
         $$ \
         DECLARE \
@@ -196,16 +234,8 @@ fn eval_pipeable(intermediate: &mut Intermediate, cmd: &ast::DefaultPipeableComm
         END CASE; \
         END \
         $$",
-                        word_str, tmp
-                    ));
-                }
-            };
-        }
-
-        ast::PipeableCommand::FunctionDef(_, _) => {
-            // println!("Pipeable - Compound");
-        }
-    };
+        word_str, tmp
+    ));
 }
 
 fn eval_simple(intermediate: &mut Intermediate, cmd: &ast::DefaultSimpleCommand) {
@@ -219,7 +249,7 @@ fn eval_simple(intermediate: &mut Intermediate, cmd: &ast::DefaultSimpleCommand)
             RedirectOrEnvVar::EnvVar(k, v) => {
                 let value;
                 if let Some(v) = v {
-                    value = topLevelWordToString(v).expect("Error parsing value");
+                    value = top_level_word_to_string(v).expect("Error parsing value");
                 } else {
                     value = "NULL".to_string();
                 }
@@ -234,7 +264,7 @@ fn eval_simple(intermediate: &mut Intermediate, cmd: &ast::DefaultSimpleCommand)
     if stop {
         return;
     }
-    let parts: Vec<String> = cmd
+    let mut parts: Vec<String> = cmd
         .redirects_or_cmd_words
         .iter()
         .filter_map(|redirect_or_word| match redirect_or_word {
@@ -284,9 +314,10 @@ fn eval_simple(intermediate: &mut Intermediate, cmd: &ast::DefaultSimpleCommand)
     }
 
     if let Some(r) = intermediate.redirect.as_ref() {
+        let target = parts.pop().unwrap().to_string();
         intermediate.redirect = match r {
-            Redirect::Write(c, _) => Some(Redirect::Write(*c, parts.last().unwrap().to_string())),
-            Redirect::Append(c, _) => Some(Redirect::Append(*c, parts.last().unwrap().to_string())),
+            Redirect::Write(c, _) => Some(Redirect::Write(*c, target)),
+            Redirect::Append(c, _) => Some(Redirect::Append(*c, target)),
             _ => None,
         };
     }
@@ -320,6 +351,15 @@ fn eval_simple(intermediate: &mut Intermediate, cmd: &ast::DefaultSimpleCommand)
         "echo" => {
             <echo::echo as Command>::run(intermediate, parts);
         }
+        "[" => {
+            println!("Conditional");
+            intermediate.sql = parts
+                .iter()
+                .skip(1)
+                .map(|x| x.to_string())
+                .collect::<Vec<String>>()
+                .join(" ");
+        }
         _ => {
             println!("Unknown command: {}", parts.first().unwrap());
             <shellCommand::shellCommand as Command>::run(intermediate, parts);
@@ -332,7 +372,7 @@ fn get_simple_word_as_string(word: &ast::DefaultSimpleWord) -> Option<String> {
         SimpleWord::Literal(w) => Some(match w.as_str() {
             "-le" => "<".to_string(),
             _ => {
-                format!("'{}'", w)
+                format!("{}", w)
             }
         }),
         SimpleWord::Escaped(_) => None,
@@ -355,9 +395,71 @@ fn get_simple_word_as_string(word: &ast::DefaultSimpleWord) -> Option<String> {
         SimpleWord::Subst(_) => None,
         SimpleWord::Star => None,
         SimpleWord::Question => None,
-        SimpleWord::SquareOpen => None,
+        SimpleWord::SquareOpen => Some("[".to_string()),
         SimpleWord::SquareClose => None,
         SimpleWord::Tilde => None,
         SimpleWord::Colon => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::executor::Executor;
+    use crate::intermediate::Intermediate;
+
+    #[test]
+    fn single_command() {
+        let script = "cat file.txt";
+        let e = Executor::create(script);
+        let mut i = Intermediate {
+            transaction: vec![],
+            sql: "".to_string(),
+            conn: None,
+            redirect: None,
+        };
+        let sql = e.to_sql(&mut i);
+        println!("{}", sql);
+    }
+
+    #[test]
+    fn simple_pipeline() {
+        let script = "cat file.txt | shuf";
+        let e = Executor::create(script);
+        let mut i = Intermediate {
+            transaction: vec![],
+            sql: "".to_string(),
+            conn: None,
+            redirect: None,
+        };
+        let sql = e.to_sql(&mut i);
+        println!("{}", sql);
+    }
+
+    #[test]
+    fn complex_pipeline() {
+        let script = "cat file.txt | shuf | sort -r -b -f | tail -n 2 | wc -l | uniq -u lines";
+        let e = Executor::create(script);
+        let mut i = Intermediate {
+            transaction: vec![],
+            sql: "".to_string(),
+            conn: None,
+            redirect: None,
+        };
+        let sql = e.to_sql(&mut i);
+        println!("{}", sql);
+    }
+
+    #[test]
+    fn redirect() {
+        let script = "cat file.txt > result.txt";
+        let e = Executor::create(script);
+        let mut i = Intermediate {
+            transaction: vec![],
+            sql: "".to_string(),
+            conn: None,
+            redirect: None,
+        };
+        let sql = e.to_sql(&mut i);
+        println!("{}", sql);
     }
 }
