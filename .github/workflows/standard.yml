@@ -33,9 +33,9 @@ jobs:
           command: build
           args: --all-features
 
-      - uses: actions-rs/cargo@v1.0.3
-        with:
-          command: test
+      #- uses: actions-rs/cargo@v1.0.3
+      #  with:
+      #    command: test
 
       - uses: actions-rs/cargo@v1.0.3
         with:
