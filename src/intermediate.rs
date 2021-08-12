@@ -1,13 +1,17 @@
-use crate::db_backend::Postgres;
 use conch_parser::ast::Redirect;
+
+#[derive(Debug, PartialEq)]
+pub enum State {
+    Default,
+    Condition,
+}
 
 #[derive(Debug)]
 pub struct Intermediate {
     pub(crate) transaction: Vec<String>,
     pub(crate) sql: String,
-    pub(crate) conn: Option<Postgres>,
-    // pub(crate) conn: Option<SQLite>,
     pub(crate) redirect: Option<Redirect<String>>,
+    pub(crate) state: State,
 }
 
 impl Default for Intermediate {
@@ -15,19 +19,16 @@ impl Default for Intermediate {
         Intermediate {
             transaction: Vec::new(),
             sql: "".to_string(),
-            conn: None,
             redirect: None,
+            state: State::Default,
         }
     }
 }
 
 impl Intermediate {
-    pub fn getSQL(&mut self) -> String {
+    pub fn get_sql(&mut self) -> String {
         if !self.sql.is_empty() {
-            self.transaction.push(format!(
-                "COPY ({}) TO '/var/lib/postgresql/result.txt'",
-                self.sql
-            ));
+            self.transaction.push(self.sql.to_string());
             self.sql.clear();
         }
         let mut sql: String = String::new();

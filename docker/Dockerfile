@@ -1,8 +1,8 @@
 FROM ubuntu:latest
 
-RUN apt-get -y update
-RUN apt-get -y upgrade
-RUN DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl build-essential sqlite3 libsqlite3-dev libssl-dev ca-certificates postgresql
+RUN apt-get -y update && apt-get -y upgrade
+RUN DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    curl build-essential libssl-dev ca-certificates postgresql
 USER postgres
 RUN service postgresql start && \
     psql -c "ALTER USER postgres WITH PASSWORD 'postgres'" && \

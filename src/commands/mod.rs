@@ -11,5 +11,6 @@ pub mod shellCommand;
 pub mod shuf;
 pub mod sort;
 pub mod tail;
+pub mod test;
 pub mod uniq;
 pub mod wc;

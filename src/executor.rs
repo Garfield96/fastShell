@@ -9,17 +9,25 @@ use conch_parser::ast::{
 use conch_parser::lexer::Lexer;
 use conch_parser::parse::{DefaultParser, Parser};
 
-use crate::commands::{cat, echo, grep, head, shellCommand, shuf, sort, tail, uniq, wc, Command};
+use crate::commands::{
+    cat, echo, grep, head, shellCommand, shuf, sort, tail, test, uniq, wc, Command,
+};
 use crate::db_backend::Postgres;
-use crate::intermediate::Intermediate;
+use crate::intermediate::{Intermediate, State};
 
 use conch_parser::ast::builder::StringBuilder;
 use postgres::{Client, NoTls};
 
+use std::io::Read;
 use std::str::Chars;
 
 pub struct Executor<'a> {
     parser: Parser<Lexer<Chars<'a>>, StringBuilder>,
+}
+
+enum CommandType {
+    Output(String),
+    NoOutput(String),
 }
 
 impl Executor<'_> {
@@ -30,9 +38,9 @@ impl Executor<'_> {
         }
     }
 
-    pub fn run(self) {
+    pub fn run(self, sql_only: bool) {
         let mut intermediate: Intermediate = Default::default();
-        intermediate.conn = Some(Postgres {
+        let mut conn = Some(Postgres {
             conn: Some(
                 Client::connect(
                     "host=localhost user=postgres password=postgres dbname='shell'",
@@ -42,41 +50,77 @@ impl Executor<'_> {
             ),
             // conn: Some(Connection::open_in_memory().expect("Cannot open connection to DB")),
         });
-        let sql = self.to_sql(&mut intermediate);
-        println!("{}", sql.replace(";", ";\n"));
-        intermediate.conn.unwrap().batch_execute(sql).unwrap();
-    }
 
-    fn to_sql(self, mut intermediate: &mut Intermediate) -> String {
-        Executor::gen_init_code(intermediate);
-        for cmd in self.parser {
-            eval_cmd(&cmd.unwrap(), intermediate.borrow_mut());
-            if !intermediate.sql.is_empty() {
-                // intermediate.transaction.push(format!("COPY ({}) TO '/var/lib/postgresql/result.txt'", intermediate.sql));
-                intermediate.transaction.push(format!(
-                    "COPY ({}) TO '/var/lib/postgresql/result.txt'",
-                    intermediate.sql
-                ));
-                intermediate.sql = String::new();
+        let batch = self.to_sql(&mut intermediate);
+
+        let mut tx = conn.as_mut().unwrap().transaction().unwrap();
+        for cmd in batch {
+            match cmd {
+                CommandType::Output(cmd) => {
+                    let mut sql = cmd;
+                    if sql.starts_with("SELECT") {
+                        sql = format!("({})", sql);
+                    }
+                    if !sql_only {
+                        sql = format!("COPY {} TO STDOUT;", sql);
+                    }
+                    sql = sql.replace(";;", ";");
+                    println!("{}", sql.replace(";", ";\n"));
+                    if !sql_only {
+                        let reader = tx.copy_out(sql.as_str()).unwrap();
+                        let bytes = reader.bytes().map(|r| r.unwrap()).collect::<Vec<u8>>();
+                        println!("\n{}", String::from_utf8(bytes).unwrap());
+                    }
+                }
+                CommandType::NoOutput(cmd) => {
+                    let mut sql = cmd.replace(";;", ";");
+                    if !sql.contains(" ") {
+                        sql = format!("({})", sql);
+                    }
+                    println!("{}", sql.replace(";", ";\n"));
+                    if !sql_only {
+                        tx.batch_execute(&*sql).unwrap();
+                    }
+                }
             }
         }
-        format!("BEGIN; {} COMMIT;", intermediate.getSQL())
+        tx.commit().unwrap();
     }
 
-    fn gen_init_code(intermediate: &mut Intermediate) {
-        intermediate.transaction.push(
+    fn to_sql(self, mut intermediate: &mut Intermediate) -> Vec<CommandType> {
+        let mut result = Executor::gen_init_code();
+        for cmd in self.parser {
+            match cmd {
+                Ok(cmd) => {
+                    eval_cmd(&cmd, intermediate.borrow_mut());
+                    for cmd in &intermediate.transaction {
+                        result.push(CommandType::NoOutput(cmd.to_string()));
+                    }
+                    if !intermediate.sql.is_empty() {
+                        result.push(CommandType::Output(intermediate.sql.to_string()));
+                    }
+                    intermediate.transaction.clear();
+                    intermediate.sql = String::new();
+                }
+                Err(e) => {
+                    println!("Parser error: {}", e);
+                }
+            }
+        }
+        result
+    }
+
+    fn gen_init_code() -> Vec<CommandType> {
+        vec![CommandType::NoOutput(
             "\
-        DROP TABLE IF EXISTS var"
-                .to_string(),
-        );
-        intermediate.transaction.push(
-            "\
+        DROP TABLE IF EXISTS var;
         CREATE TABLE var (\
         name TEXT UNIQUE NOT NULL,\
         type TEXT,\
-        value TEXT)"
-                .to_string(),
-        );
+        value TEXT);"
+                .parse()
+                .unwrap(),
+        )]
     }
 }
 
@@ -84,7 +128,18 @@ fn eval_cmd(cmd: &ast::TopLevelCommand<String>, intermediate: &mut Intermediate)
     match &cmd.0 {
         ast::Command::Job(list) | ast::Command::List(list) => std::iter::once(&list.first)
             .chain(list.rest.iter().map(|and_or| match and_or {
-                ast::AndOr::And(cmd) | ast::AndOr::Or(cmd) => cmd,
+                ast::AndOr::And(cmd) => {
+                    // if intermediate.state == State::Condition {
+                    //     intermediate.sql.push_str(" && ");
+                    // }
+                    cmd
+                }
+                ast::AndOr::Or(cmd) => {
+                    // if intermediate.state == State::Condition {
+                    //     intermediate.sql.push_str(" || ");
+                    // }
+                    cmd
+                }
             }))
             .for_each(|cmd| {
                 eval_listable(&cmd, intermediate);
@@ -130,76 +185,162 @@ fn eval_pipeable(intermediate: &mut Intermediate, cmd: &ast::DefaultPipeableComm
                     println!("Subshell")
                 }
                 CompoundCommandKind::While(w) => {
-                    let guard_tmp = String::new();
-                    for guard in &w.guard {
-                        let mut interm: Intermediate = Default::default();
-                        eval_cmd(guard, &mut interm);
-                    }
-                    let tmp = String::new();
-                    for _body in &w.body {
-                        let _interm: Intermediate = Default::default();
-                        // body.iter().for_each(|cmd| eval_cmd(cmd, &mut interm));
-                        // tmp.push_str(&*format!(
-                        //     "WHEN {} THEN {}",
-                        //     conditions.join(" or "),
-                        //     interm.getSQL()
-                        // ));
-                    }
-                    intermediate.transaction.push(format!(
-                        "\
-        DO \
-        $$ \
-        BEGIN \
-        WHILE {} LOOP \
-        {} \
-        END LOOP; \
-        END \
-        $$",
-                        guard_tmp, tmp
-                    ));
+                    while_stmt(intermediate, &w);
                 }
-                CompoundCommandKind::Until(_) => {}
+                CompoundCommandKind::Until(w) => {
+                    until_stmt(intermediate, &w);
+                }
                 CompoundCommandKind::If {
                     conditionals: c,
-                    else_branch: _e,
+                    else_branch: e,
                 } => {
-                    for cond in c {
-                        let GuardBodyPair { guard, body } = cond;
-                        for g in guard {
-                            eval_cmd(g, intermediate);
-                        }
-                        for b in body {
-                            eval_cmd(b, intermediate);
-                        }
-                    }
-                    intermediate.transaction.push(format!(
-                        "\
-        DO \
-        $$ \
-        BEGIN \
-        IF 0 = 0 THEN \
-        COPY data TO '/var/lib/postgresql/13/result2.txt'; \
-        ELSE \
-        COPY data TO '/var/lib/postgresql/13/result.txt'; \
-        END IF; \
-        END \
-        $$"
-                    ));
+                    if_stmt(intermediate, c, e);
                 }
                 CompoundCommandKind::For { .. } => {}
                 CompoundCommandKind::Case { word, arms } => {
-                    caseStmt(intermediate, word, arms);
+                    case_stmt(intermediate, word, arms);
                 }
             };
         }
 
         ast::PipeableCommand::FunctionDef(_, _) => {
-            // println!("Pipeable - Compound");
+            // println!("Pipeable - FunctionDef");
         }
     };
 }
 
-fn caseStmt(
+fn if_stmt(
+    intermediate: &mut Intermediate,
+    c: &Vec<GuardBodyPair<TopLevelCommand<String>>>,
+    e: &Option<Vec<TopLevelCommand<String>>>,
+) {
+    let mut eval_cond = String::new();
+    let mut eval_body = String::new();
+    for cond in c {
+        let GuardBodyPair { guard, body } = cond;
+        intermediate.state = State::Condition;
+        for g in guard {
+            eval_cmd(g, intermediate);
+        }
+        intermediate.state = State::Default;
+        eval_cond = intermediate.sql.to_string();
+        intermediate.sql = String::new();
+        for b in body {
+            eval_cmd(b, intermediate);
+        }
+        eval_body = intermediate.sql.to_string();
+        intermediate.sql = String::new();
+    }
+
+    let mut else_code = String::new();
+    if let Some(e) = e {
+        else_code = "ELSE ".to_string();
+        for cmd in e {
+            intermediate.sql = String::new();
+            eval_cmd(cmd, intermediate);
+            else_code.push_str(&*format!(
+                "INSERT INTO stdout SELECT * FROM ({}) as output;",
+                intermediate.sql.to_string()
+            ));
+            intermediate.sql = String::new();
+        }
+    }
+
+    intermediate
+        .transaction
+        .push("DROP TABLE IF EXISTS stdout;".to_string());
+    intermediate
+        .transaction
+        .push("CREATE TABLE stdout (lines TEXT);".to_string());
+
+    intermediate.transaction.push(format!(
+        "\
+        DO \
+        $$ \
+        BEGIN \
+        IF {} THEN \
+        INSERT INTO stdout SELECT * FROM ({}) as output; \
+        {}
+        END IF; \
+        END \
+        $$;",
+        eval_cond, eval_body, else_code
+    ));
+    intermediate.sql = "stdout".to_string();
+}
+
+fn while_stmt(intermediate: &mut Intermediate, w: &&GuardBodyPair<TopLevelCommand<String>>) {
+    let mut eval_guard = String::new();
+    let mut eval_body = String::new();
+    for guard in &w.guard {
+        let mut interm: Intermediate = Default::default();
+        eval_cmd(guard, &mut interm);
+        eval_guard = interm.sql;
+    }
+    for body in &w.body {
+        let mut interm: Intermediate = Default::default();
+        eval_cmd(body, &mut interm);
+        eval_body = interm.sql
+    }
+    intermediate
+        .transaction
+        .push("DROP TABLE IF EXISTS stdout;".to_string());
+    intermediate
+        .transaction
+        .push("CREATE TABLE stdout (lines TEXT);".to_string());
+    intermediate.transaction.push(format!(
+        "\
+        DO \
+        $$ \
+        BEGIN \
+        WHILE {} LOOP \
+        INSERT INTO stdout SELECT * FROM ({}) as output; \
+        END LOOP; \
+        END \
+        $$;",
+        eval_guard, eval_body
+    ));
+    intermediate.sql = "stdout".to_string();
+}
+
+fn until_stmt(intermediate: &mut Intermediate, w: &&GuardBodyPair<TopLevelCommand<String>>) {
+    let mut eval_guard = String::new();
+    let mut eval_body = String::new();
+    for guard in &w.guard {
+        let mut interm: Intermediate = Default::default();
+        eval_cmd(guard, &mut interm);
+        eval_guard = interm.sql;
+    }
+    for body in &w.body {
+        let mut interm: Intermediate = Default::default();
+        eval_cmd(body, &mut interm);
+        eval_body = interm.sql
+    }
+    intermediate
+        .transaction
+        .push("DROP TABLE IF EXISTS stdout;".to_string());
+    intermediate
+        .transaction
+        .push("CREATE TABLE stdout (lines TEXT);".to_string());
+    intermediate.transaction.push(format!(
+        "\
+        DO \
+        $$ \
+        BEGIN \
+        LOOP \
+        INSERT INTO stdout SELECT * FROM ({}) as output; \
+        IF {} THEN
+            EXIT;
+        END IF;
+        END LOOP; \
+        END \
+        $$;",
+        eval_body, eval_guard
+    ));
+    intermediate.sql = "stdout".to_string();
+}
+
+fn case_stmt(
     intermediate: &mut Intermediate,
     word: &TopLevelWord<String>,
     arms: &Vec<PatternBodyPair<TopLevelWord<String>, TopLevelCommand<String>>>,
@@ -211,16 +352,22 @@ fn caseStmt(
             .iter()
             .map(top_level_word_to_string)
             .filter(|s| s.is_some())
-            .map(|s| format!("search_str = {}", s.unwrap()))
+            .map(|s| format!("search_str = '{}'", s.unwrap()))
             .collect();
         let mut interm: Intermediate = Default::default();
         body.iter().for_each(|cmd| eval_cmd(cmd, &mut interm));
         tmp.push_str(&*format!(
-            "WHEN {} THEN {}",
+            "WHEN {} THEN INSERT INTO stdout SELECT * FROM ({}) as output;",
             conditions.join(" or "),
-            interm.getSQL()
+            interm.sql
         ));
     }
+    intermediate
+        .transaction
+        .push("DROP TABLE IF EXISTS stdout;".to_string());
+    intermediate
+        .transaction
+        .push("CREATE TABLE stdout (lines TEXT);".to_string());
     intermediate.transaction.push(format!(
         "\
         DO \
@@ -228,7 +375,7 @@ fn caseStmt(
         DECLARE \
         search_str text; \
         BEGIN \
-        search_str := ({}); \
+        search_str := ('{}'); \
         CASE \
         {} \
         END CASE; \
@@ -236,6 +383,7 @@ fn caseStmt(
         $$",
         word_str, tmp
     ));
+    intermediate.sql = "stdout".to_string();
 }
 
 fn eval_simple(intermediate: &mut Intermediate, cmd: &ast::DefaultSimpleCommand) {
@@ -254,8 +402,8 @@ fn eval_simple(intermediate: &mut Intermediate, cmd: &ast::DefaultSimpleCommand)
                     value = "NULL".to_string();
                 }
                 intermediate.transaction.push(format!(
-                    "INSERT INTO var (name, value) VALUES ('{0}',{1}) \
-        ON CONFLICT(name) DO UPDATE SET value = {1}",
+                    "INSERT INTO var (name, value) VALUES ('{0}','{1}') \
+                    ON CONFLICT(name) DO UPDATE SET value = '{1}'",
                     k, value
                 ));
                 stop = true;
@@ -299,14 +447,10 @@ fn eval_simple(intermediate: &mut Intermediate, cmd: &ast::DefaultSimpleCommand)
             ast::Word::Simple(w) => get_simple_word_as_string(w.borrow()),
 
             ast::Word::DoubleQuoted(words) if words.len() == 1 => {
-                get_simple_word_as_string(&words[0])
+                get_simple_word_as_string(&words[0]).map(|w| format!("\"{}\"", w))
             }
             ast::Word::DoubleQuoted(_) => None,
         })
-        // .map(|word| {
-        //     println!("{}", word);
-        //     word
-        // })
         .collect();
 
     if parts.is_empty() {
@@ -321,7 +465,7 @@ fn eval_simple(intermediate: &mut Intermediate, cmd: &ast::DefaultSimpleCommand)
             _ => None,
         };
     }
-    let parts: Vec<&String> = parts.iter().map(|x| x).collect();
+    let parts: Vec<&String> = parts.iter().collect();
     let first = parts.first().unwrap().to_string();
     match first.replace("'", "").as_str() {
         "cat" => {
@@ -351,6 +495,9 @@ fn eval_simple(intermediate: &mut Intermediate, cmd: &ast::DefaultSimpleCommand)
         "echo" => {
             <echo::echo as Command>::run(intermediate, parts);
         }
+        "test" => {
+            <test::test as Command>::run(intermediate, parts);
+        }
         "[" => {
             println!("Conditional");
             intermediate.sql = parts
@@ -369,12 +516,7 @@ fn eval_simple(intermediate: &mut Intermediate, cmd: &ast::DefaultSimpleCommand)
 
 fn get_simple_word_as_string(word: &ast::DefaultSimpleWord) -> Option<String> {
     match word {
-        SimpleWord::Literal(w) => Some(match w.as_str() {
-            "-le" => "<".to_string(),
-            _ => {
-                format!("{}", w)
-            }
-        }),
+        SimpleWord::Literal(w) => Some(w.to_string()),
         SimpleWord::Escaped(_) => None,
         SimpleWord::Param(p) => {
             match p {
@@ -395,7 +537,7 @@ fn get_simple_word_as_string(word: &ast::DefaultSimpleWord) -> Option<String> {
         SimpleWord::Subst(_) => None,
         SimpleWord::Star => None,
         SimpleWord::Question => None,
-        SimpleWord::SquareOpen => Some("[".to_string()),
+        SimpleWord::SquareOpen => Some("test".to_string()),
         SimpleWord::SquareClose => None,
         SimpleWord::Tilde => None,
         SimpleWord::Colon => None,
@@ -406,60 +548,189 @@ fn get_simple_word_as_string(word: &ast::DefaultSimpleWord) -> Option<String> {
 mod tests {
     use crate::executor::Executor;
     use crate::intermediate::Intermediate;
+    use postgres::{Client, NoTls};
+    use proptest::prelude::*;
+
+    // TestContext based on https://snoozetime.github.io/2019/06/16/integration-test-diesel.html
+    struct TestContext {
+        db_name: String,
+    }
+
+    impl TestContext {
+        fn new(db_name: &str) -> Self {
+            let mut client =
+                Client::connect("host=localhost user=postgres password=postgres", NoTls).unwrap();
+            client
+                .execute(format!("DROP DATABASE IF EXISTS {}", db_name).as_str(), &[])
+                .unwrap();
+            client
+                .execute(format!("CREATE DATABASE {}", db_name).as_str(), &[])
+                .unwrap();
+            Self {
+                db_name: db_name.to_string(),
+            }
+        }
+    }
+
+    impl Drop for TestContext {
+        fn drop(&mut self) {
+            let mut client =
+                Client::connect("host=localhost user=postgres password=postgres", NoTls).unwrap();
+            // client.execute(format!("DROP DATABASE {}", self.db_name).as_str(), &[]).unwrap();
+        }
+    }
 
     #[test]
     fn single_command() {
-        let script = "cat file.txt";
+        let test_db = "single_command_test";
+        let _test_ctx = TestContext::new(test_db);
+
+        let script = "cat Cargo.toml";
+
         let e = Executor::create(script);
-        let mut i = Intermediate {
-            transaction: vec![],
-            sql: "".to_string(),
-            conn: None,
-            redirect: None,
-        };
-        let sql = e.to_sql(&mut i);
-        println!("{}", sql);
+        e.run(false);
     }
 
     #[test]
     fn simple_pipeline() {
-        let script = "cat file.txt | shuf";
+        let test_db = "simple_pipeline_test";
+        let _test_ctx = TestContext::new(test_db);
+
+        let script = "cat Cargo.toml | shuf";
+
         let e = Executor::create(script);
-        let mut i = Intermediate {
-            transaction: vec![],
-            sql: "".to_string(),
-            conn: None,
-            redirect: None,
-        };
-        let sql = e.to_sql(&mut i);
-        println!("{}", sql);
+        e.run(false);
     }
 
     #[test]
     fn complex_pipeline() {
-        let script = "cat file.txt | shuf | sort -r -b -f | tail -n 2 | wc -l | uniq -u lines";
+        let test_db = "complex_pipeline_test";
+        let _test_ctx = TestContext::new(test_db);
+
+        let script = "cat Cargo.toml | shuf | sort -r -b -f | head -n 2 | wc -l";
+
         let e = Executor::create(script);
-        let mut i = Intermediate {
-            transaction: vec![],
-            sql: "".to_string(),
-            conn: None,
-            redirect: None,
-        };
-        let sql = e.to_sql(&mut i);
-        println!("{}", sql);
+        e.run(false);
     }
 
     #[test]
     fn redirect() {
-        let script = "cat file.txt > result.txt";
+        let test_db = "redirect_pipeline_test";
+        let _test_ctx = TestContext::new(test_db);
+
+        let script = "cat Cargo.toml > result.txt";
+
         let e = Executor::create(script);
-        let mut i = Intermediate {
-            transaction: vec![],
-            sql: "".to_string(),
-            conn: None,
-            redirect: None,
-        };
-        let sql = e.to_sql(&mut i);
-        println!("{}", sql);
+        e.run(false);
+    }
+
+    #[test]
+    fn case_stmt() {
+        let test_db = "case_stmt_test";
+        let _test_ctx = TestContext::new(test_db);
+
+        let script = "case \"car\" in \
+           \"car\") echo \'car\';; \
+           \"van\") echo \'van\';; \
+        esac;";
+
+        let e = Executor::create(script);
+        e.run(false);
+    }
+
+    #[test]
+    fn if_stmt() {
+        let test_db = "if_stmt_test";
+        let _test_ctx = TestContext::new(test_db);
+
+        let script = "if [ 1 -le 100 ]; then \
+            echo \"1 is less than 100\"; \
+            fi";
+
+        let e = Executor::create(script);
+        e.run(false);
+    }
+
+    #[test]
+    fn if_else_stmt() {
+        let test_db = "if_else_stmt_test";
+        let _test_ctx = TestContext::new(test_db);
+
+        let script = "if [ 1 -ge 100 ]; then \
+            echo \'1 is greater than 100\'; \
+            else
+            echo \'1 is not greater than 100\'; \
+            echo \'...\'; \
+            fi";
+
+        let e = Executor::create(script);
+        e.run(false);
+    }
+
+    #[test]
+    fn if_test_stmt() {
+        let test_db = "if_test_stmt_test";
+        let _test_ctx = TestContext::new(test_db);
+
+        let script = "if test 001 -eq 1; \
+            then \
+            echo \"1 is less than 100\"; \
+            fi";
+
+        let e = Executor::create(script);
+        e.run(false);
+    }
+
+    #[test]
+    fn while_stmt() {
+        let test_db = "while_stmt_test";
+        let _test_ctx = TestContext::new(test_db);
+
+        let script = "while test 001 -ne 1; \
+            do \
+            echo \"1 is less than 100\"; \
+            done";
+
+        let e = Executor::create(script);
+        e.run(false);
+    }
+
+    #[test]
+    fn until_stmt() {
+        let test_db = "until_stmt_test";
+        let _test_ctx = TestContext::new(test_db);
+
+        let script = "until test 001 -eq 1; \
+            do \
+            echo \"1 is less than 100\"; \
+            done";
+
+        let e = Executor::create(script);
+        e.run(false);
+    }
+
+    // #[test]
+    // fn sqlfs_stmt() {
+    //     let test_db = "until_stmt_test";
+    //     let _test_ctx = TestContext::new(test_db);
+    //
+    //     let script = "if [ 1 -ge 100 ]; then \
+    //         cat test; \
+    //         else
+    //         echo \'1 is not greater than 100\'; \
+    //         echo \'...\'; \
+    //         fi";
+    //     let e = Executor::create(script);
+    //     e.run(false);
+    // }
+
+    proptest! {
+        #[test]
+        fn test_pipline(script in "cat [a-zA-Z]+ (\\| (shuf))") {
+            println!("{}", script);
+            let e = Executor::create(script.as_str());
+            let mut i : Intermediate = Default::default();
+            e.to_sql(&mut i);
+        }
     }
 }

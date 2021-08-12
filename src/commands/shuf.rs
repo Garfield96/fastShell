@@ -1,7 +1,8 @@
 use crate::commands::Command;
 use crate::intermediate::Intermediate;
-use clap::{App, Arg};
+use clap::App;
 
+#[allow(non_camel_case_types)]
 pub struct shuf;
 
 impl Command for shuf {

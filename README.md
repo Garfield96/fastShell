@@ -1,6 +1,10 @@
 # FastShell
 
-A small shell interpreter, which translates shell commands into SQL and thus enables full pipeline optimization.
+A small shell interpreter, which translates shell commands into PL/pgSQL and thus enables full pipeline optimization.
+
+If used with a normal file system, this interpreter only supports branch-free scripts. This limitation arises from limitations within Postgres, which prohibit the use of the `copy` command within PL/pgSQL.
+
+In conjunction with SQLFS, `copy` is not needed to load the data, since the data is already present in the database. However, shell commands which are not natively supported will not be functional, since the fall back solution also requires the `copy` command to pipe the data into an external shell command.
 
 ## Build Docker Image
 ```sh
@@ -33,16 +37,12 @@ target/release/fastShell <script>
 
 Only write redirects `>` are supported.
 
-### Postgres
-
-Adapt username and password and make sure a DB called `shell` exists.
-
 ## Supported Commands
 
 * `cat <file>`
 * `head -n <line count>`
 * `tail -n <line count>`
-* `sort`
+* `sort <flags>`
   * `-r`,`--reverse`
   * `-b`,`--ignore-leading-blanks`
   * `-f`,`--ignore-case`
@@ -55,3 +55,7 @@ Adapt username and password and make sure a DB called `shell` exists.
   * `-c`, `--chars`
   
 All commands support `--help`. 
+
+## Examples
+
+see test cases in `executor.rs`

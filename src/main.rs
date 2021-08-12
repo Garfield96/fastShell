@@ -5,6 +5,7 @@ use clap::{App, Arg};
 // Build upon https://github.com/ipetkov/conch-parser/blob/master/examples/analysis.rs
 
 use crate::executor::Executor;
+use std::option::Option::Some;
 
 mod commands;
 mod db_backend;
@@ -32,12 +33,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .value_name("FILE")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("SQL")
+                .help("Generate and output sql")
+                .short("s")
+                .value_name("sql")
+                .takes_value(false),
+        )
         .get_matches();
 
-    let script_file = args.value_of("FILE").unwrap_or("");
     let mut script;
 
-    if !script_file.is_empty() {
+    if let Some(script_file) = args.value_of("FILE") {
         let mut input_file = File::open(script_file).expect("Cannot open input file");
         script = String::new();
         input_file.read_to_string(&mut script).unwrap();
@@ -46,7 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let executor = Executor::create(&script);
-    executor.run();
+    executor.run(args.is_present("SQL"));
 
     Ok(())
 }

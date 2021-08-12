@@ -1,5 +1,4 @@
 use postgres::Error;
-use rusqlite::{Statement, Transaction};
 
 use std::fmt;
 
@@ -7,25 +6,6 @@ use std::fmt;
 //     fn execute(&mut self, sql: String);
 //     fn prepare<S>(&mut self, sql: String) -> &S;
 // }
-#[derive(Debug)]
-pub struct SQLite {
-    pub conn: Option<rusqlite::Connection>,
-}
-
-// impl DB for SQLite {
-impl SQLite {
-    pub fn execute(&mut self, sql: String) {
-        self.conn.as_ref().unwrap().execute(sql.as_str(), []);
-    }
-
-    pub fn prepare(&mut self, sql: String) -> Result<Statement<'_>, rusqlite::Error> {
-        self.conn.as_ref().unwrap().prepare(sql.as_str())
-    }
-
-    pub fn transaction(&mut self) -> Result<Transaction<'_>, rusqlite::Error> {
-        self.conn.as_mut().unwrap().transaction()
-    }
-}
 
 pub struct Postgres {
     pub conn: Option<postgres::Client>,

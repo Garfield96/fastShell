@@ -2,7 +2,10 @@ use crate::commands::Command;
 use crate::intermediate::Intermediate;
 use crate::STANDALONE;
 use clap::{App, Arg};
+use std::env;
+use std::path::MAIN_SEPARATOR;
 
+#[allow(non_camel_case_types)]
 pub struct cat;
 
 impl Command for cat {
@@ -27,13 +30,19 @@ impl Command for cat {
                 // t.commit();
                 intermediate
                     .transaction
-                    .push("DROP TABLE IF EXISTS data".to_string());
+                    .push("DROP TABLE IF EXISTS data;".to_string());
                 intermediate
                     .transaction
-                    .push("CREATE TEMPORARY TABLE data (lines text)".to_string());
+                    .push("CREATE TEMPORARY TABLE data (lines text);".to_string());
+                let f = if f.starts_with(MAIN_SEPARATOR) {
+                    f.to_string()
+                } else {
+                    let current_dir = env::current_dir().unwrap();
+                    String::from(current_dir.join(f).to_str().unwrap())
+                };
                 intermediate
                     .transaction
-                    .push(format!("COPY data FROM '{}'", f));
+                    .push(format!("COPY data FROM '{}';", f));
                 intermediate.sql = format!("SELECT * FROM {}", "data")
             } else {
                 intermediate.sql = format!("SELECT * FROM {}", f)
