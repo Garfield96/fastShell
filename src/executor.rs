@@ -74,7 +74,7 @@ impl Executor<'_> {
                 }
                 CommandType::NoOutput(cmd) => {
                     let mut sql = cmd.replace(";;", ";");
-                    if !sql.contains(" ") {
+                    if !sql.contains(' ') {
                         sql = format!("({})", sql);
                     }
                     println!("{}", sql.replace(";", ";\n"));
@@ -211,7 +211,7 @@ fn eval_pipeable(intermediate: &mut Intermediate, cmd: &ast::DefaultPipeableComm
 
 fn if_stmt(
     intermediate: &mut Intermediate,
-    c: &Vec<GuardBodyPair<TopLevelCommand<String>>>,
+    c: &[GuardBodyPair<TopLevelCommand<String>>],
     e: &Option<Vec<TopLevelCommand<String>>>,
 ) {
     let mut eval_cond = String::new();
@@ -280,7 +280,15 @@ fn while_stmt(intermediate: &mut Intermediate, w: &&GuardBodyPair<TopLevelComman
     for body in &w.body {
         let mut interm: Intermediate = Default::default();
         eval_cmd(body, &mut interm);
-        eval_body = interm.sql
+        eval_body = format!(
+            "{}{}",
+            eval_body,
+            match interm.sql.as_str() {
+                "EXIT;" => "EXIT;".to_string(),
+                "CONTINUE;" => "CONTINUE;".to_string(),
+                s => format!("INSERT INTO stdout SELECT * FROM ({}) as output;", s),
+            }
+        );
     }
     intermediate
         .transaction
@@ -294,7 +302,7 @@ fn while_stmt(intermediate: &mut Intermediate, w: &&GuardBodyPair<TopLevelComman
         $$ \
         BEGIN \
         WHILE {} LOOP \
-        INSERT INTO stdout SELECT * FROM ({}) as output; \
+        {}\
         END LOOP; \
         END \
         $$;",
@@ -343,22 +351,27 @@ fn until_stmt(intermediate: &mut Intermediate, w: &&GuardBodyPair<TopLevelComman
 fn case_stmt(
     intermediate: &mut Intermediate,
     word: &TopLevelWord<String>,
-    arms: &Vec<PatternBodyPair<TopLevelWord<String>, TopLevelCommand<String>>>,
+    arms: &[PatternBodyPair<TopLevelWord<String>, TopLevelCommand<String>>],
 ) {
     let word_str = top_level_word_to_string(word).unwrap();
+    let word_str = if word_str.contains("SELECT") {
+        word_str
+    } else {
+        format!("'{}'", word_str)
+    };
     let mut tmp = String::new();
     for PatternBodyPair { patterns, body } in arms {
         let conditions: Vec<String> = patterns
             .iter()
             .map(top_level_word_to_string)
             .filter(|s| s.is_some())
-            .map(|s| format!("search_str = '{}'", s.unwrap()))
+            .map(|s| format!("'{}'", s.unwrap()))
             .collect();
         let mut interm: Intermediate = Default::default();
         body.iter().for_each(|cmd| eval_cmd(cmd, &mut interm));
         tmp.push_str(&*format!(
             "WHEN {} THEN INSERT INTO stdout SELECT * FROM ({}) as output;",
-            conditions.join(" or "),
+            conditions.join(", "),
             interm.sql
         ));
     }
@@ -372,11 +385,8 @@ fn case_stmt(
         "\
         DO \
         $$ \
-        DECLARE \
-        search_str text; \
         BEGIN \
-        search_str := ('{}'); \
-        CASE \
+        CASE ({}) \
         {} \
         END CASE; \
         END \
@@ -458,7 +468,7 @@ fn eval_simple(intermediate: &mut Intermediate, cmd: &ast::DefaultSimpleCommand)
     }
 
     if let Some(r) = intermediate.redirect.as_ref() {
-        let target = parts.pop().unwrap().to_string();
+        let target = parts.pop().unwrap();
         intermediate.redirect = match r {
             Redirect::Write(c, _) => Some(Redirect::Write(*c, target)),
             Redirect::Append(c, _) => Some(Redirect::Append(*c, target)),
@@ -473,6 +483,12 @@ fn eval_simple(intermediate: &mut Intermediate, cmd: &ast::DefaultSimpleCommand)
         }
         "head" => {
             <head::head as Command>::run(intermediate, parts);
+        }
+        "break" => {
+            intermediate.sql = "EXIT;".to_string();
+        }
+        "continue" => {
+            intermediate.sql = "CONTINUE;".to_string();
         }
         "tail" => {
             <tail::tail as Command>::run(intermediate, parts);
@@ -530,7 +546,10 @@ fn get_simple_word_as_string(word: &ast::DefaultSimpleWord) -> Option<String> {
                 Parameter::Positional(_) => None,
                 Parameter::Var(var) => {
                     // TODO: get from table
-                    Some(format!("SELECT value FROM var WHERE name = '{}'", var))
+                    Some(format!(
+                        "SELECT value FROM var WHERE name = '{}' LIMIT 1",
+                        var
+                    ))
                 }
             }
         }
@@ -629,7 +648,23 @@ mod tests {
         let test_db = "case_stmt_test";
         let _test_ctx = TestContext::new(test_db);
 
-        let script = "case \"car\" in \
+        let script = "case \"car2\" in \
+           \"car\"|\"car2\") echo \'car\';; \
+           \"van\") echo \'van\';; \
+        esac;";
+
+        let e = Executor::create(script);
+        e.run(false);
+    }
+
+    #[test]
+    fn case_stmt_var() {
+        let test_db = "case_stmt_var_test";
+        let _test_ctx = TestContext::new(test_db);
+
+        let script = "\
+        var=van; \
+        case $var in \
            \"car\") echo \'car\';; \
            \"van\") echo \'van\';; \
         esac;";
@@ -646,6 +681,21 @@ mod tests {
         let script = "if [ 1 -le 100 ]; then \
             echo \"1 is less than 100\"; \
             fi";
+
+        let e = Executor::create(script);
+        e.run(false);
+    }
+
+    #[test]
+    fn if_stmt_var() {
+        let test_db = "if_stmt_var_test";
+        let _test_ctx = TestContext::new(test_db);
+
+        let script = "\
+        var='test'; \
+        if [ $var -eq 'test' ]; then \
+            echo \"var equals test\"; \
+        fi";
 
         let e = Executor::create(script);
         e.run(false);
@@ -672,7 +722,7 @@ mod tests {
         let test_db = "if_test_stmt_test";
         let _test_ctx = TestContext::new(test_db);
 
-        let script = "if test 001 -eq 1; \
+        let script = "if test 1 -le 100; \
             then \
             echo \"1 is less than 100\"; \
             fi";
@@ -686,8 +736,24 @@ mod tests {
         let test_db = "while_stmt_test";
         let _test_ctx = TestContext::new(test_db);
 
-        let script = "while test 001 -ne 1; \
+        let script = "while test 1 -ne 1; \
             do \
+            echo \"1 is less than 100\"; \
+            done";
+
+        let e = Executor::create(script);
+        e.run(false);
+    }
+
+    #[test]
+    fn while_exit_stmt() {
+        let test_db = "while_exit_stmt_test";
+        let _test_ctx = TestContext::new(test_db);
+
+        let script = "while test 1 -eq 1; \
+            do \
+            break; \
+            continue;
             echo \"1 is less than 100\"; \
             done";
 
@@ -700,10 +766,27 @@ mod tests {
         let test_db = "until_stmt_test";
         let _test_ctx = TestContext::new(test_db);
 
-        let script = "until test 001 -eq 1; \
+        let script = "until test 1 -eq 1; \
             do \
             echo \"1 is less than 100\"; \
             done";
+
+        let e = Executor::create(script);
+        e.run(false);
+    }
+
+    #[test]
+    fn example() {
+        let test_db = "example_test";
+        let _test_ctx = TestContext::new(test_db);
+
+        let script = "\
+        arch='x86'; \
+        if [ $arch -eq 'x86' ]; then
+            cat test.txt | shuf | sort -r -b -f  | grep 'li' | uniq -c lines | tail -n 2 | head -n 1 | wc -c; \
+        else \
+            echo 'Not supported'; \
+        fi";
 
         let e = Executor::create(script);
         e.run(false);

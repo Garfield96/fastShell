@@ -77,7 +77,7 @@ fn getxattr_impl(target: Target, name: &CStr) -> io::Result<Vec<u8>> {
                 return Ok(buf);
             }
             Err(e) => {
-                if !(e.raw_os_error() == Some(libc::ERANGE)) || buf.len() > init_size * 4 {
+                if e.raw_os_error() != Some(libc::ERANGE) || buf.len() > init_size * 4 {
                     return Err(e);
                 }
             }
